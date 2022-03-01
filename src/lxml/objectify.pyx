@@ -231,7 +231,6 @@ cdef class ObjectifiedElement(ElementBase):
         """
         if is_special_method(tag):
             return object.__getattr__(self, tag)
-        print('tag', tag)
         return _lookupChildOrRaise(self, tag)
 
     def __setattr__(self, tag, value):
