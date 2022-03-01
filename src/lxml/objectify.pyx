@@ -414,26 +414,15 @@ cdef tree.xmlNode* _findFollowingSibling(tree.xmlNode* c_node,
                                          const_xmlChar* href, const_xmlChar* name,
                                          Py_ssize_t index):
     cdef tree.xmlNode* (*next)(tree.xmlNode*)
-    cdef tree.xmlNode* start_node
     cdef tree.xmlNode* result_node
     cdef int found = 0
 
-    start_node = c_node
     if index >= 0:
         next = cetree.nextElement
     else:
         index = -1 - index
         next = cetree.previousElement
-    # search with namespace
-    while c_node is not NULL:
-        if c_node.type == tree.XML_ELEMENT_NODE and \
-               _tagMatches(c_node, href, name):
-            index = index - 1
-            if index < 0:
-                return c_node
-        c_node = next(c_node)
     # search without namespace
-    c_node = start_node
     while c_node is not NULL:
         if c_node.type == tree.XML_ELEMENT_NODE and c_node.name == name:
             index = index - 1
