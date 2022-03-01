@@ -180,7 +180,7 @@ cdef class ObjectifiedElement(ElementBase):
         c_ns = tree._getNs(self._c_node)
         tag = u"{%s}*" % pyunicode(c_ns) if c_ns is not NULL else None
         children = {}
-        for child in etree.ElementChildIterator(self, tag=tag):
+        for child in etree.ElementChildIterator(self):
             if c_ns is NULL and tree._getNs(child._c_node) is not NULL:
                 continue
             name = pyunicode(child._c_node.name)
@@ -231,6 +231,7 @@ cdef class ObjectifiedElement(ElementBase):
         """
         if is_special_method(tag):
             return object.__getattr__(self, tag)
+        print('tag', tag)
         return _lookupChildOrRaise(self, tag)
 
     def __setattr__(self, tag, value):
@@ -414,11 +415,17 @@ cdef tree.xmlNode* _findFollowingSibling(tree.xmlNode* c_node,
                                          const_xmlChar* href, const_xmlChar* name,
                                          Py_ssize_t index):
     cdef tree.xmlNode* (*next)(tree.xmlNode*)
+    cdef tree.xmlNode* start_node
+    cdef tree.xmlNode* result_node
+    cdef int found = 0
+
+    start_node = c_node
     if index >= 0:
         next = cetree.nextElement
     else:
         index = -1 - index
         next = cetree.previousElement
+    # search with namespace
     while c_node is not NULL:
         if c_node.type == tree.XML_ELEMENT_NODE and \
                _tagMatches(c_node, href, name):
@@ -426,6 +433,18 @@ cdef tree.xmlNode* _findFollowingSibling(tree.xmlNode* c_node,
             if index < 0:
                 return c_node
         c_node = next(c_node)
+    # search without namespace
+    c_node = start_node
+    while c_node is not NULL:
+        if c_node.type == tree.XML_ELEMENT_NODE and c_node.name == name:
+            index = index - 1
+            if index < 0:
+                result_node = c_node
+                found += 1
+        c_node = next(c_node)
+    # check if only one result is found
+    if found == 1:
+        return result_node
     return NULL
 
 cdef object _lookupChild(_Element parent, tag):
