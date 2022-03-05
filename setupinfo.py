@@ -14,7 +14,7 @@ try:
 except ImportError:
     CYTHON_INSTALLED = False
 
-EXT_MODULES = ["lxml.etree", "lxml.objectify"]
+EXT_MODULES = ["lxml.etree", "lxml.objectify", "lxml.objectify2" ]
 COMPILED_MODULES = [
     "lxml.builder",
     "lxml._elementpath",
