@@ -3,27 +3,26 @@
 # cython: language_level=2
 
 """
-The ``lxml.objectify`` module implements a Python object API for XML.
+The ``lxml.objectify2`` module implements a Python object API for XML.
 It is based on `lxml.etree`.
 """
 
 from __future__ import absolute_import
 
-cimport cython
-cimport libc.string as cstring_h  # not to be confused with stdlib 'string'
 cimport lxml.includes.etreepublic as cetree
-from libc.string cimport const_char
 from lxml cimport python
 from lxml.includes cimport tree
-from lxml.includes.etreepublic cimport (ElementBase, ElementClassLookup,
-                                        _Document, _Element, elementFactory,
-                                        import_lxml__etree, pyunicode, textOf)
+from lxml.includes.etreepublic cimport ( _Element, elementFactory,
+                                        import_lxml__etree, pyunicode)
 from lxml.includes.tree cimport _xcstr, const_xmlChar
 
 from lxml.objectify cimport ObjectifiedElement
 
-from lxml.objectify cimport _appendValue, _replaceElement, _setSlice, _lookupChildOrRaise, _buildChildTag
+from lxml.objectify cimport _appendValue, _replaceElement, _setSlice
 
+from lxml.objectify cimport _typename, _buildChildTag
+
+from lxml.includes.etreepublic cimport ElementBase
 
 cdef object etree
 from lxml import etree
@@ -33,7 +32,6 @@ import_lxml__etree()
 __version__ = etree.__version__
 
 cdef object _float_is_inf, _float_is_nan
-from math import isinf as _float_is_inf, isnan as _float_is_nan
 
 cdef object re
 import re
@@ -44,8 +42,74 @@ cdef object is_special_method = re.compile(u'__.*__$').match
 cdef object _parse
 _parse = etree.parse
 
+class NoUnderscoreTag(Exception):
+    pass
+
+
+cdef class Qtag():
+
+    name = None
+    namespace = None
+
+    def __init__(self, namespace, name):
+        self.namespace = namespace
+        self.name = name
+
+    @property
+    def cl(self):
+        return '{' + self.namespace + '}' + self.name
+
+    @property
+    def u(self):
+        return self.namespace + '_' + self.name
+
+    @classmethod
+    def from_utag(cls, u_tag):
+        split_utag = u_tag.split('_')
+        if len(split_utag) == 1:
+            namespace = None
+            name = u_tag
+        else:
+            ns_prefix, name  = split_utag[0], ' '.join(split_utag[1])
+        return cls(ns_prefix, name)
+
+    @classmethod
+    def from_cltag(cls, cl_tag):
+        namespace, name  = ns_name_from_clarke(cl_tag)
+        return cls(namespace, name)
+
+# Switch for lookup mode for non qualified tags
+# Work like lxml.objectify (lookup tag in parent namespace)
+MODE_LEGACY = 0
+# If tag is found once in the list of children return it, else raise AttributeError
+MODE_STRICT = 1
+# If tag is found once in the list of children return it, else return list of matching childs
+MODE_LIST = 2
+
+cdef int _lookup_mode[1]  # storage  'lookup_mode'
+_lookup_mode[0] = MODE_LEGACY # default to legacy
+
+# C getter/setter
+cdef int*  _get_lookup_mode(): return _lookup_mode
+cdef void* _set_lookup_mode(int i): _lookup_mode[0]=i
+
+# Python getter/setter
+def get_lookup_mode():
+    return _get_lookup_mode()[0]
+
+def set_lookup_mode(mode):
+    _set_lookup_mode(mode)
+
 
 cdef class ObjectifiedElement2(ObjectifiedElement):
+
+    @property
+    def __lookup_mode__(self):
+        return _get_lookup_mode()[0]
+
+    @__lookup_mode__.setter
+    def __lookup_mode__(self, int mode):
+        _set_lookup_mode(mode)
 
     @property
     def __dict__(self):
@@ -59,78 +123,92 @@ cdef class ObjectifiedElement2(ObjectifiedElement):
         for child in etree.ElementChildIterator(self):
             prefix = pyunicode(child._c_node.ns.prefix)
             name = pyunicode(child._c_node.name)
-            q_tag = '{}_{}'.format(prefix, name)
-            if q_tag not in children:
-                children[q_tag] = child
+            u_tag = '{}_{}'.format(prefix, name)
+            if u_tag not in children:
+                children[u_tag] = child
         return children
 
-    def prefix_and_name_from_qtag(self, q_tag):
+    def prefix_and_name_from_utag(self, u_tag):
         """
         Split a q_tag in ns-prefix and name
         """
-        split_tag = q_tag.split('_')
+        split_tag = u_tag.split('_')
+        if len(split_tag) == 1:
+            # check if we have an default namespace
+#            print(self.nsmap)
+            if None in self.nsmap:
+               return None, u_tag
+            # We have a not qualified tag
+            raise \
+                AttributeError("Tag '{}' has no prefix, nor is a default namespace defined".format(u_tag))
         return split_tag[0], '_'.join(split_tag[1:])
 
-    def ns_and_name_from_qtag(self, q_tag):
+    def ns_and_name_from_utag(self, u_tag):
         """
         Split a q_tag in namespace and name
         """
-        prefix, name = self.prefix_and_name_from_qtag(q_tag)
+        prefix, name = self.prefix_and_name_from_utag(u_tag)
         namespace = self.nsmap[prefix]
         return namespace, name
 
-    def clarke_from_qtag(self, q_tag):
+    def clarke_from_utag(self, u_tag):
         """
         Convert a q_tag to Clarke notation
         """
-        prefix, name = self.prefix_and_name_from_qtag(q_tag)
+        prefix, name = self.prefix_and_name_from_utag(u_tag)
 
         try:
             namespace = self.nsmap[prefix]
         except KeyError as e:
-            return name
+            return '{}' + name
 
-        res = '{' + namespace + '}' + name
-        return res
+        cl_tag = '{' + namespace + '}' + name
+        return cl_tag
 
-    def __getattr__(self, tag):
+    def __getattr__(self, u_tag):
         u"""Return the (first) child with the given tag name.  If no namespace
         is provided, the child will be looked up in the same one as self.
         """
-        if is_special_method(tag):
-            return object.__getattribute__(self, tag)
+        if is_special_method(u_tag):
+            return object.__getattribute__(self, u_tag)
 
-        ns_tag = self.clarke_from_qtag(tag)
-        return _lookupChildOrRaise(self, ns_tag)
+        # If we already have a clarke notated tag
+        if u_tag[0] == '{':
+            return _lookupChildOrRaise(self, u_tag)
 
-    # def __setattr__(self, tag, value):
-    #     u"""Set the value of the (first) child with the given tag name.  If no
-    #     namespace is provided, the child will be looked up in the same one as
-    #     self.
-    #     """
-    #     cdef _Element element
-    #     # properties are looked up /after/ __setattr__, so we must emulate them
-    #     if tag == u'text' or tag == u'pyval':
-    #         # read-only !
-    #         raise TypeError, f"attribute '{tag}' of '{_typename(self)}' objects is not writable"
-    #     elif tag == u'tail':
-    #         cetree.setTailText(self._c_node, value)
-    #         return
-    #     elif tag == u'tag':
-    #         ElementBase.tag.__set__(self, value)
-    #         return
-    #     elif tag == u'base':
-    #         ElementBase.base.__set__(self, value)
-    #         return
-    #     tag = _buildChildTag(self, tag)
-    #     element = _lookupChild(self, tag)
-    #     if element is None:
-    #         _appendValue(self, tag, value)
-    #     else:
-    #         _replaceElement(element, value)
+        cl_tag = self.clarke_from_utag(u_tag)
+        return _lookupChildOrRaise(self, cl_tag)
 
-    def __delattr__(self, tag):
-        child = _lookupChildOrRaise(self, tag)
+
+    def __setattr__(self, tag, value):
+        u"""Set the value of the (first) child with the given tag name.  If no
+        namespace is provided, the child will be looked up in the same one as
+        self.
+        """
+        cdef _Element element
+        # properties are looked up /after/ __setattr__, so we must emulate them
+        if tag == u'text' or tag == u'pyval':
+            # read-only !
+            raise TypeError, f"attribute '{tag}' of '{_typename(self)}' objects is not writable"
+        elif tag == u'tail':
+            cetree.setTailText(self._c_node, value)
+            return
+        elif tag == u'tag':
+            ElementBase.tag.__set__(self, value)
+            return
+        elif tag == u'base':
+            ElementBase.base.__set__(self, value)
+            return
+        cl_tag = self.clarke_from_utag(tag)
+        tag = _buildChildTag(self, cl_tag)
+        element = _lookupChild(self, tag)
+        if element is None:
+            _appendValue(self, tag, value)
+        else:
+            _replaceElement(element, value)
+
+    def __delattr__(self, u_tag):
+        child = self.__getattr__(u_tag)
         self.remove(child)
 
     # def addattr(self, tag, value):
@@ -197,8 +275,7 @@ cdef class ObjectifiedElement2(ObjectifiedElement):
         cdef _Element element
         cdef tree.xmlNode* c_node
         if python._isString(key):
-            key = _buildChildTag(self, key)
-            element = _lookupChild(self, key)
+            element = self.__getattr__(key)
             if element is None:
                 _appendValue(self, key, value)
             else:
@@ -244,6 +321,18 @@ cdef class ObjectifiedElement2(ObjectifiedElement):
         return _lookupChild(self, tag)
 
 
+    def addattr(self, q_tag, value):
+        u"""addattr(self, tag, value)
+
+        Add a child value to the element.
+
+        As opposed to append(), it sets a data value, not an element.
+        """
+        ns_tag = self.clarke_from_utag(q_tag)
+        _appendValue(self, ns_tag, value)
+
+
+
 cdef tree.xmlNode* _findFollowingSibling(tree.xmlNode* c_node,
                                          const_xmlChar* ns, const_xmlChar* name,
                                          Py_ssize_t index):
@@ -273,24 +362,27 @@ cdef object ns_name_from_clarke(cl_tag):
     """
     split_tag = cl_tag.split('}')
     if len(split_tag) < 2 :
-        return None
+        return ''
 
     return split_tag[0][1:], split_tag[1]
 
 
-cdef object _lookupChild(_Element parent, tag):
+cdef object _lookupChildOrRaise(_Element parent, tag):
+    element = _lookupChild(parent, tag)
+    if element is None:
+        raise AttributeError, u"no such child: " + tag
+    return element
+
+
+cdef object _lookupChild(_Element parent, cl_tag):
     cdef tree.xmlNode* c_result
     cdef tree.xmlNode* c_node
 
-    result = ns_name_from_clarke(tag)
-    if result is None:
-        return None
-
+    result = ns_name_from_clarke(cl_tag)
     namespace, name = result
 
     c_node = parent._c_node
     c_name = bytes(name.encode('utf-8'))
-    c_namespace = bytes(namespace.encode('utf-8'))
 
     c_tag = tree.xmlDictExists(
         c_node.doc.dict, _xcstr(c_name), python.PyBytes_GET_SIZE(c_name))
@@ -298,10 +390,17 @@ cdef object _lookupChild(_Element parent, tag):
     if c_tag is NULL:
         return None # not in the hash map => not in the tree
 
-    c_result = _findFollowingSibling(c_node.children, c_namespace, c_tag, 0)
-    if c_result is NULL:
+    if namespace is None:
+        c_result = _findFollowingSibling(c_node.children, NULL, c_tag, 0)
+    else:
+        c_namespace = bytes(namespace.encode('utf-8'))
+        c_result = _findFollowingSibling(c_node.children, c_namespace, c_tag, 0)
 
+#    print('_lookupChild cl_tag {}'.format(cl_tag))
+    if c_result is NULL:
+#        print('_lookupChild cl_tag {} failed'.format(cl_tag))
         return None
+#    print('_lookupChild cl_tag {} ok'.format(cl_tag))
     return elementFactory(parent._doc, c_result)
 
 
@@ -314,3 +413,6 @@ cdef inline bint _tagMatches(tree.xmlNode* c_node, const_xmlChar* c_href, const_
     if c_node_href == NULL:
         return c_href[0] == c'\0'
     return tree.xmlStrcmp(c_node_href, c_href) == 0
+
+
+

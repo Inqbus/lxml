@@ -12,6 +12,7 @@ cdef _replaceElement(_Element element, value)
 
 cdef _setSlice(sliceobject, _Element target, items)
 
-cdef object _lookupChildOrRaise(_Element parent, tag)
+cdef object _typename(object t)
 
-cdef inline object _buildChildTag(_Element parent, tag)
+cdef object _buildChildTag(_Element parent, tag)
+
